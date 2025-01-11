@@ -237,7 +237,7 @@ def main():
     print(df)
     # Save convergence table as an image
     try:
-        import dataframe_image as dfi
+        import dataframe_image as dfi  # type: ignore
         df_styled = df.style.set_caption("Convergence Table").format(precision=5)
         #dfi.export(df_styled, 'convergence_table.png')
         print("\nConvergence table saved as 'convergence_table.png'.")
