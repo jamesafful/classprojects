@@ -1,1 +1,1 @@
-# classprojects
+# Class Projects
