@@ -1,0 +1,208 @@
+import numpy as np
+from scipy.linalg import solve
+from scipy.special import roots_legendre
+import matplotlib.pyplot as plt
+
+pi = np.pi
+
+# Given p1(x) and p2(x)
+def p1_func(x):
+    return (-64*pi*(18 - 6*pi**4*x**2 + 18*pi**2*x**3 + 2*pi**4*x
+                    - 36*pi**2*x**2 - 27*x + 12*pi**2*x
+                    + 4*pi**4*x**3 + 3*pi**2))
+
+def p2_func(x):
+    return (216 - 816*pi**2 - 96*pi**4 + 32*pi**6*x**2
+            - 384*pi**4*x**3 - 64*pi**6*x**3 - 288*pi**4*x**2
+            + 3456*pi**2*x + 576*pi**4*x - 2592*pi**2*x**2
+            + 144*pi**4*x**4 + 32*pi**6*x**4)
+
+def f_func(x):
+    return p1_func(x)*np.cos(2*pi*x) + p2_func(x)*np.sin(2*pi*x)
+
+# Exact solution: u(x)
+def exact_solution(x):
+    return ((18 + 2*pi**2)*x**2 + (-24 -4*pi**2)*x**3 + (9 + 2*pi**2)*x**4)*np.sin(2*pi*x)
+
+# Exact second derivative for error computations:
+def exact_solution_second_derivative(x):
+    A = (18+2*pi**2)
+    B = (-24 -4*pi**2)
+    C = (9 + 2*pi**2)
+    P = A*x**2 + B*x**3 + C*x**4
+    P_prime = 2*A*x + 3*B*x**2 + 4*C*x**3
+    P_double_prime = 2*A + 6*B*x + 12*C*x**2
+
+    return (P_double_prime*np.sin(2*pi*x) + 4*pi*P_prime*np.cos(2*pi*x) -4*pi**2*P*np.sin(2*pi*x))
+
+def create_mesh(N):
+    nodes = np.linspace(0, 1, N+1)
+    h = 1.0 / N
+    return nodes, h
+
+def hermite_shape_functions(s, h):
+    H0 = 1 - 3*s**2 + 2*s**3
+    H1 = h*(s - 2*s**2 + s**3)
+    H2 = 3*s**2 - 2*s**3
+    H3 = h*(-s**2 + s**3)
+    return np.array([H0, H1, H2, H3])
+
+def hermite_shape_functions_second_derivative(s, h):
+    # Corrected second derivatives:
+    H0_dd = -6 + 12*s
+    H1_dd = h*(-4 + 6*s)
+    H2_dd = 6 - 12*s    # corrected from 6-6*s
+    H3_dd = h*(-2 + 6*s)
+    return np.array([H0_dd, H1_dd, H2_dd, H3_dd])
+
+def assemble_system(nodes, h, quadrature_order=4):
+    N = len(nodes)-1
+    total_dof = 2*(N+1)
+    K_global = np.zeros((total_dof, total_dof))
+    F_global = np.zeros(total_dof)
+
+    gp, gw = roots_legendre(quadrature_order)
+    gp_mapped = 0.5*(gp+1)
+    gw_mapped = 0.5*gw
+
+    for elem in range(N):
+        dof = [2*elem, 2*elem+1, 2*(elem+1), 2*(elem+1)+1]
+        K_e = np.zeros((4,4))
+        F_e = np.zeros(4)
+
+        for k in range(quadrature_order):
+            s = gp_mapped[k]
+            w = gw_mapped[k]
+
+            H = hermite_shape_functions(s, h)
+            H_dd = hermite_shape_functions_second_derivative(s, h)
+
+            x = nodes[elem] + s*h
+            f_val = f_func(x)
+
+            # Stiffness
+            for i in range(4):
+                for j in range(4):
+                    K_e[i,j] += H_dd[i]*H_dd[j]*w
+
+            # Load
+            for i in range(4):
+                F_e[i] += H[i]*f_val*w
+
+        # Scale for the x-domain
+        K_e /= h**3
+        F_e *= h
+
+        # Assemble
+        for i in range(4):
+            F_global[dof[i]] += F_e[i]
+            for j in range(4):
+                K_global[dof[i], dof[j]] += K_e[i,j]
+
+    return K_global, F_global
+
+def apply_boundary_conditions(K, F):
+    # Essential BC: u(0)=0, u'(0)=0
+    fixed_dofs = [0,1]
+    for dof in fixed_dofs:
+        K[dof,:] = 0
+        K[:,dof] = 0
+        K[dof,dof] = 1
+        F[dof] = 0
+    return K, F
+
+def compute_errors(U, nodes, h, quadrature_order=4):
+    N = len(nodes)-1
+    gp, gw = roots_legendre(quadrature_order)
+    gp_mapped = 0.5*(gp+1)
+    gw_mapped = 0.5*gw
+
+    energy_error_sq = 0.0
+    l2_error_sq = 0.0
+
+    for elem in range(N):
+        dof = [2*elem, 2*elem+1, 2*(elem+1), 2*(elem+1)+1]
+        U_e = U[dof]
+
+        for k in range(quadrature_order):
+            s = gp_mapped[k]
+            w = gw_mapped[k]
+            x = nodes[elem] + s*h
+
+            H = hermite_shape_functions(s, h)
+            H_dd = hermite_shape_functions_second_derivative(s, h)
+
+            u_h = H @ U_e
+            u_h_dd = (H_dd @ U_e)/(h**2)
+
+            u_ex = exact_solution(x)
+            u_ex_dd = exact_solution_second_derivative(x)
+
+            # Energy norm error
+            energy_error_sq += (u_h_dd - u_ex_dd)**2 * w * h
+            # L2 norm error
+            l2_error_sq += (u_h - u_ex)**2 * w * h
+
+    return np.sqrt(energy_error_sq), np.sqrt(l2_error_sq)
+
+def run_simulation(max_refinements=6):
+    print(f"{'N':>5} {'h':>10} {'Energy Error':>20} {'Energy Order':>15} {'L2 Error':>20} {'L2 Order':>15}")
+    prev_energy = None
+    prev_l2 = None
+
+    for refinement in range(1, max_refinements+1):
+        N = 2**refinement
+        nodes, h = create_mesh(N)
+        K, F = assemble_system(nodes, h, quadrature_order=4)
+        K, F = apply_boundary_conditions(K, F)
+        U = solve(K, F)
+
+        energy_error, l2_error = compute_errors(U, nodes, h, quadrature_order=4)
+
+        if prev_energy is not None:
+            energy_order = np.log(prev_energy/energy_error)/np.log(2)
+            l2_order = np.log(prev_l2/l2_error)/np.log(2)
+            print(f"{N:5d} {h:10.5f} {energy_error:20.8e} {energy_order:15.4f} {l2_error:20.8e} {l2_order:15.4f}")
+        else:
+            print(f"{N:5d} {h:10.5f} {energy_error:20.8e} {'-':>15} {l2_error:20.8e} {'-':>15}")
+
+        prev_energy = energy_error
+        prev_l2 = l2_error
+
+def plot_solution(U, nodes, h, N_plot=1000):
+    x_vals = np.linspace(0,1,N_plot+1)
+    u_num = np.zeros_like(x_vals)
+    u_ex = exact_solution(x_vals)
+
+    for i,x in enumerate(x_vals):
+        # Identify the element
+        if x == 1.0:
+            elem = len(nodes)-2
+        else:
+            elem = int(x/h)
+        elem = min(elem, len(nodes)-2)
+        s = (x - nodes[elem])/h
+        H = hermite_shape_functions(s,h)
+        dof = [2*elem, 2*elem+1, 2*(elem+1), 2*(elem+1)+1]
+        U_e = U[dof]
+        u_num[i] = H@U_e
+
+    plt.figure(figsize=(10,6))
+    plt.plot(x_vals, u_ex, 'r-', label='Exact')
+    plt.plot(x_vals, u_num, 'b--', label='cG(3) Approximation')
+    plt.xlabel('x')
+    plt.ylabel('u(x)')
+    plt.title('Numerical vs Exact Solution')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+if __name__ == "__main__":
+    run_simulation(max_refinements=6)
+    # Plot solution for the finest mesh
+    N = 2**6
+    nodes, h = create_mesh(N)
+    K, F = assemble_system(nodes, h, quadrature_order=4)
+    K, F = apply_boundary_conditions(K, F)
+    U = solve(K, F)
+    plot_solution(U, nodes, h, N_plot=1000)
